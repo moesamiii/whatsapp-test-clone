@@ -1,122 +1,205 @@
-// index.js — FINAL WORKING VERSION (Vercel + WhatsApp Cloud API)
-
+// index.js - FIXED VERSION (No Google Sheets)
 const express = require("express");
 const bodyParser = require("body-parser");
 const path = require("path");
-const fetch = require("node-fetch");
 const { registerWebhookRoutes } = require("./webhookHandler");
 
 const app = express();
 app.use(bodyParser.json());
 
-// --------------------------------------------------
-// ENVIRONMENT VARIABLES (FROM VERCEL)
-// --------------------------------------------------
-const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
+// ---------------------------------------------
+// Environment Variables
+// ---------------------------------------------
+const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "my_secret";
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 
-// --------------------------------------------------
-// STARTUP LOGS
-// --------------------------------------------------
+// ---------------------------------------------
+// Startup logs
+// ---------------------------------------------
 console.log("🚀 Server starting...");
-console.log("✅ VERIFY_TOKEN:", !!VERIFY_TOKEN);
-console.log("✅ WHATSAPP_TOKEN:", !!WHATSAPP_TOKEN);
-console.log("✅ PHONE_NUMBER_ID:", PHONE_NUMBER_ID || "❌ MISSING");
+console.log("✅ VERIFY_TOKEN loaded:", !!VERIFY_TOKEN);
+console.log("✅ WHATSAPP_TOKEN loaded:", !!WHATSAPP_TOKEN);
+console.log("✅ PHONE_NUMBER_ID loaded:", PHONE_NUMBER_ID || "❌ Not found");
 
-// --------------------------------------------------
-// BASIC ROUTES
-// --------------------------------------------------
+// ✅ REMOVED detectSheetName() - No longer needed with Supabase
+
+// ---------------------------------------------
+// Global booking memory
+// ---------------------------------------------
+global.tempBookings = global.tempBookings || {};
+const tempBookings = global.tempBookings;
+
+// ---------------------------------------------
+// Basic routes (non-webhook)
+// ---------------------------------------------
 app.get("/", (req, res) => {
   res.send("✅ WhatsApp Webhook for Clinic is running on Vercel!");
 });
 
-app.get("/dashboard", (req, res) => {
+app.get("/dashboard", async (req, res) => {
   res.sendFile(path.join(__dirname, "dashboard.html"));
 });
 
-// --------------------------------------------------
-// SEND WHATSAPP MESSAGE (TEXT ONLY — SAFE)
-// --------------------------------------------------
-async function sendWhatsAppText(to, text) {
-  const url = `https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`;
-
-  const payload = {
-    messaging_product: "whatsapp",
-    to,
-    type: "text",
-    text: { body: text },
-  };
-
-  await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
-}
-
-// --------------------------------------------------
-// WEBHOOK VERIFICATION (META REQUIREMENT)
-// --------------------------------------------------
-app.get("/webhook", (req, res) => {
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
-
-  if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    console.log("✅ Webhook verified by Meta");
-    return res.status(200).send(challenge);
+// ✅ FIXED - Get bookings from Supabase instead of Google Sheets
+app.get("/api/bookings", async (req, res) => {
+  try {
+    const { getAllBookingsFromSupabase } = require("./databaseHelper");
+    const data = await getAllBookingsFromSupabase();
+    res.json(data);
+  } catch (err) {
+    console.error("❌ Error fetching bookings:", err);
+    res.status(500).json({ error: "Failed to fetch bookings" });
   }
-
-  console.warn("❌ Webhook verification failed");
-  return res.sendStatus(403);
 });
 
-// --------------------------------------------------
-// WEBHOOK RECEIVER (AUTO REPLY TEST)
-// --------------------------------------------------
-app.post("/webhook", async (req, res) => {
+// ---------------------------------------------
+// WhatsApp Message Sending Route (WITH IMAGES!)
+// ---------------------------------------------
+app.post("/sendWhatsApp", async (req, res) => {
   try {
-    const message = req.body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+    const { name, phone, service, appointment, image } = req.body;
+    console.log("📩 Incoming request to /sendWhatsApp:", req.body);
 
-    if (!message) {
-      return res.sendStatus(200);
+    // Validation
+    if (!name || !phone) {
+      console.warn("⚠️ Missing name or phone number");
+      return res.status(400).json({ error: "Missing name or phone number" });
     }
 
-    const from = message.from;
-    const text = message.text?.body || "";
+    // Construct message
+    const messageText = `👋 مرحبًا ${name}!\nتم حجز موعدك لخدمة ${service} في Smile Clinic 🦷\n📅 ${appointment}`;
+    const url = `https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`;
+    const headers = {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+    };
 
-    console.log("📩 Incoming message:", from, text);
+    console.log("📤 Sending message to:", phone);
+    console.log("🖼️ Image URL:", image || "No image");
 
-    // ✅ SIMPLE AUTO REPLY (CONFIRM BOT IS WORKING)
-    await sendWhatsAppText(from, "✅ Bot is working!\nمرحبًا بك 👋");
+    // Case 1: Send with image
+    if (image && image.startsWith("http")) {
+      console.log("📤 Sending image message...");
 
-    return res.sendStatus(200);
-  } catch (err) {
-    console.error("❌ Webhook error:", err);
-    return res.sendStatus(500);
+      const imagePayload = {
+        messaging_product: "whatsapp",
+        to: phone,
+        type: "image",
+        image: {
+          link: image,
+          caption: messageText,
+        },
+      };
+
+      const imageResponse = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(imagePayload),
+      });
+
+      const imageData = await imageResponse.json();
+      console.log("🖼️ Image response:", JSON.stringify(imageData));
+
+      if (!imageResponse.ok || imageData.error) {
+        console.error("❌ Image failed:", imageData);
+
+        // Fallback to text
+        const textPayload = {
+          messaging_product: "whatsapp",
+          to: phone,
+          type: "text",
+          text: {
+            body: messageText + "\n\n📞 للحجز أو الاستفسار، تواصل معنا الآن!",
+          },
+        };
+
+        const textResponse = await fetch(url, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(textPayload),
+        });
+
+        const textData = await textResponse.json();
+        return res.status(200).json({
+          success: true,
+          fallback: true,
+          textData,
+          imageError: imageData,
+        });
+      }
+
+      // Success - send follow-up
+      const followupPayload = {
+        messaging_product: "whatsapp",
+        to: phone,
+        type: "text",
+        text: {
+          body: "📞 للحجز أو الاستفسار، تواصل معنا الآن!",
+        },
+      };
+
+      await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(followupPayload),
+      });
+
+      console.log("✅ Image message sent successfully to:", phone);
+      return res.status(200).json({
+        success: true,
+        imageData,
+        message: "Image sent successfully",
+      });
+    }
+
+    // Case 2: Text only (no image)
+    const textPayload = {
+      messaging_product: "whatsapp",
+      to: phone,
+      type: "text",
+      text: {
+        body: messageText + "\n\n📞 للحجز أو الاستفسار، تواصل معنا الآن!",
+      },
+    };
+
+    const textResponse = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(textPayload),
+    });
+
+    const textData = await textResponse.json();
+
+    if (!textResponse.ok) {
+      console.error("❌ WhatsApp API Error:", textData);
+      return res.status(500).json({ success: false, error: textData });
+    }
+
+    console.log("✅ Text message sent successfully to:", phone);
+    res.status(200).json({ success: true, textData });
+  } catch (error) {
+    console.error("🚨 Error sending WhatsApp message:", error);
+    res.status(500).json({ error: error.message });
   }
 });
 
-// --------------------------------------------------
-// REGISTER ADVANCED ROUTES (YOUR EXISTING LOGIC)
-// --------------------------------------------------
+// ---------------------------------------------
+// Register webhook routes (GET /webhook and POST /webhook)
+// ---------------------------------------------
 try {
   registerWebhookRoutes(app, VERIFY_TOKEN);
-  console.log("✅ Advanced webhook routes loaded");
+  console.log("✅ Webhook routes registered successfully.");
 } catch (err) {
-  console.error("⚠️ Webhook handler error:", err);
+  console.error("⚠️ Error registering webhook routes:", err);
 }
 
-// --------------------------------------------------
-// START SERVER (LOCAL ONLY — VERCEL IGNORES THIS)
-// --------------------------------------------------
+// ---------------------------------------------
+// Run Server
+// ---------------------------------------------
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`✅ Server running on port ${PORT}`);
+  console.log(`✅ Server running on http://localhost:${PORT}`);
 });
 
 module.exports = app;
