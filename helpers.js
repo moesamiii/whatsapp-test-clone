@@ -1,12 +1,12 @@
 /**
- * helpers.js (FINAL — Supabase ONLY, No Google Sheets)
+ * helpers.js — FINAL (Supabase ONLY, Vercel Safe)
  */
 
 const axios = require("axios");
 const { askAI, validateNameWithAI } = require("./aiHelper");
 
 // =============================================
-// 🗄 SUPABASE — ALL BOOKING LOGIC HERE
+// 🗄 SUPABASE — BOOKING OPERATIONS
 // =============================================
 const {
   findLastBookingByPhone,
@@ -25,13 +25,14 @@ const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 // =============================================
 async function sendTextMessage(to, text) {
   try {
-    console.log(`📤 Sending WhatsApp: ${to}`, text);
+    console.log("📤 Sending WhatsApp text:", to, text);
 
     await axios.post(
       `https://graph.facebook.com/v17.0/${PHONE_NUMBER_ID}/messages`,
       {
         messaging_product: "whatsapp",
         to,
+        type: "text",
         text: { body: text },
       },
       {
@@ -47,10 +48,12 @@ async function sendTextMessage(to, text) {
 }
 
 // =============================================
-// 📅 APPOINTMENT BUTTONS
+// 📅 APPOINTMENT BUTTON OPTIONS
 // =============================================
 async function sendAppointmentOptions(to) {
   try {
+    console.log("📅 Sending appointment buttons to:", to);
+
     await axios.post(
       `https://graph.facebook.com/v17.0/${PHONE_NUMBER_ID}/messages`,
       {
@@ -59,12 +62,23 @@ async function sendAppointmentOptions(to) {
         type: "interactive",
         interactive: {
           type: "button",
-          body: { text: "📅 اختر الموعد المناسب لك:" },
+          body: {
+            text: "📅 اختر الموعد المناسب لك:",
+          },
           action: {
             buttons: [
-              { type: "reply", reply: { id: "slot_3pm", title: "3 PM" } },
-              { type: "reply", reply: { id: "slot_6pm", title: "6 PM" } },
-              { type: "reply", reply: { id: "slot_9pm", title: "9 PM" } },
+              {
+                type: "reply",
+                reply: { id: "slot_3pm", title: "🕒 3 مساءً" },
+              },
+              {
+                type: "reply",
+                reply: { id: "slot_6pm", title: "🕕 6 مساءً" },
+              },
+              {
+                type: "reply",
+                reply: { id: "slot_9pm", title: "🕘 9 مساءً" },
+              },
             ],
           },
         },
@@ -76,15 +90,20 @@ async function sendAppointmentOptions(to) {
       }
     );
   } catch (err) {
-    console.error("❌ Appointment button error:", err.message);
+    console.error(
+      "❌ Appointment button error:",
+      err.response?.data || err.message
+    );
   }
 }
 
 // =============================================
-// 💊 SERVICE LIST
+// 💊 SERVICE LIST (INTERACTIVE LIST)
 // =============================================
 async function sendServiceList(to) {
   try {
+    console.log("💊 Sending service list to:", to);
+
     await axios.post(
       `https://graph.facebook.com/v17.0/${PHONE_NUMBER_ID}/messages`,
       {
@@ -93,27 +112,32 @@ async function sendServiceList(to) {
         type: "interactive",
         interactive: {
           type: "list",
-          header: { type: "text", text: "💊 اختر الخدمة المطلوبة" },
-          body: { text: "اختر نوع الخدمة من القائمة:" },
+          header: {
+            type: "text",
+            text: "💊 خدمات العيادة",
+          },
+          body: {
+            text: "اختر نوع الخدمة المطلوبة:",
+          },
           action: {
             button: "عرض الخدمات",
             sections: [
               {
                 title: "الخدمات الأساسية",
                 rows: [
-                  { id: "service_فحص عام", title: "فحص عام" },
-                  { id: "service_تنظيف الأسنان", title: "تنظيف الأسنان" },
-                  { id: "service_تبييض الأسنان", title: "تبييض الأسنان" },
-                  { id: "service_حشو الأسنان", title: "حشو الأسنان" },
+                  { id: "service_فحص", title: "فحص عام" },
+                  { id: "service_تنظيف", title: "تنظيف الأسنان" },
+                  { id: "service_تبييض", title: "تبييض الأسنان" },
+                  { id: "service_حشو", title: "حشو الأسنان" },
                 ],
               },
               {
                 title: "الخدمات المتقدمة",
                 rows: [
-                  { id: "service_علاج الجذور", title: "علاج الجذور" },
-                  { id: "service_تركيب التركيبات", title: "التركيبات" },
-                  { id: "service_تقويم الأسنان", title: "تقويم الأسنان" },
-                  { id: "service_خلع الأسنان", title: "خلع الأسنان" },
+                  { id: "service_جذور", title: "علاج الجذور" },
+                  { id: "service_تركيبات", title: "تركيب التركيبات" },
+                  { id: "service_تقويم", title: "تقويم الأسنان" },
+                  { id: "service_خلع", title: "خلع الأسنان" },
                 ],
               },
             ],
@@ -127,22 +151,24 @@ async function sendServiceList(to) {
       }
     );
   } catch (err) {
-    console.error("❌ Service list error:", err.message);
+    console.error("❌ Service list error:", err.response?.data || err.message);
   }
 }
 
-// ======================================================
-// 🔥 CANCEL BOOKING
-// ======================================================
+// =============================================
+// ❌ CANCEL BOOKING FLOW
+// =============================================
 async function askForCancellationPhone(to) {
   await sendTextMessage(
     to,
-    "📌 أرسل رقم الجوال المستخدم بالحجز لإلغاء الموعد."
+    "📌 من فضلك أرسل رقم الجوال المستخدم في الحجز لإلغاء الموعد."
   );
 }
 
 async function processCancellation(to, phone) {
   try {
+    console.log("🛑 Cancel request for phone:", phone);
+
     const booking = await findLastBookingByPhone(phone);
 
     if (!booking) {
@@ -154,11 +180,14 @@ async function processCancellation(to, phone) {
 
     await sendTextMessage(
       to,
-      `🟣 تم إلغاء الحجز:\n👤 ${booking.name}\n💊 ${booking.service}\n📅 ${booking.appointment}`
+      `🟣 تم إلغاء الحجز بنجاح:\n\n👤 الاسم: ${booking.name}\n💊 الخدمة: ${booking.service}\n📅 الموعد: ${booking.appointment}`
     );
   } catch (err) {
-    console.error("❌ Cancel error:", err.message);
-    await sendTextMessage(to, "⚠️ حدث خطأ أثناء الإلغاء. حاول لاحقًا.");
+    console.error("❌ Cancel booking error:", err.message);
+    await sendTextMessage(
+      to,
+      "⚠️ حدث خطأ أثناء إلغاء الحجز. حاول مرة أخرى لاحقًا."
+    );
   }
 }
 
@@ -175,7 +204,7 @@ module.exports = {
   sendAppointmentOptions,
   sendServiceList,
 
-  // Supabase ONLY
+  // Supabase
   insertBookingToSupabase,
 
   // Cancellation
