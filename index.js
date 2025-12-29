@@ -10,7 +10,7 @@ app.use(bodyParser.json());
 // ---------------------------------------------
 // Environment Variables
 // ---------------------------------------------
-const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "my_secret";
+const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "whatsapp_test_clone_123";
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 
