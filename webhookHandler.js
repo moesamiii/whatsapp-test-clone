@@ -1,5 +1,5 @@
 /**
- * webhookHandler.js (FINAL FIXED VERSION)
+ * webhookHandler.js (UPDATED – STEP 1 FIX)
  *
  * Responsibilities:
  * - Verify webhook
@@ -9,9 +9,9 @@
  * - Handle audio transcription
  */
 
-const { askAI, sendTextMessage, sendAppointmentOptions } = require("./helpers");
+const { sendTextMessage } = require("./helpers");
 
-// ⚠️ FIXED — media functions must come from mediaService.js
+// Media services
 const {
   sendLocationMessages,
   sendOffersImages,
@@ -19,24 +19,25 @@ const {
   sendOffersValidity,
 } = require("./mediaService");
 
-// ⚠️ FIXED — ban words functions come from contentFilter.js
+// Content filter
 const { containsBanWords, sendBanWordsResponse } = require("./contentFilter");
 
-// ✔ detection helpers stay in messageHandlers.js
+// Detection helpers
 const {
   isLocationRequest,
   isOffersRequest,
   isOffersConfirmation,
   isDoctorsRequest,
-  isBookingRequest,
   isCancelRequest,
   isEnglish,
   isGreeting,
   getGreeting,
 } = require("./messageHandlers");
 
+// Audio handler
 const { handleAudioMessage } = require("./webhookProcessor");
 
+// Booking flow
 const {
   getSession,
   handleInteractiveMessage,
@@ -82,120 +83,89 @@ function registerWebhookRoutes(app, VERIFY_TOKEN) {
       const session = getSession(from);
       const tempBookings = (global.tempBookings = global.tempBookings || {});
 
-      // -----------------------------------------------------
-      // 🎙️ AUDIO → sent to audio processor
-      // -----------------------------------------------------
+      // 🎙️ AUDIO
       if (message.type === "audio") {
         await handleAudioMessage(message, from);
         return res.sendStatus(200);
       }
 
-      // -----------------------------------------------------
-      // 🎛️ INTERACTIVE (Buttons / Lists)
-      // -----------------------------------------------------
+      // 🎛️ INTERACTIVE
       if (message.type === "interactive") {
         await handleInteractiveMessage(message, from, tempBookings);
         return res.sendStatus(200);
       }
 
-      // -----------------------------------------------------
-      // 📨 Ignore Non-Text Messages
-      // -----------------------------------------------------
+      // Ignore non-text
       if (!text) return res.sendStatus(200);
 
-      // -----------------------------------------------------
-      // 👋 Greeting detection
-      // -----------------------------------------------------
+      // 👋 GREETING (FIXED)
       if (isGreeting(text)) {
         const reply = getGreeting(isEnglish(text));
         await sendTextMessage(from, reply);
         return res.sendStatus(200);
       }
 
-      // -----------------------------------------------------
-      // 🚫 Ban Words
-      // -----------------------------------------------------
+      // 🚫 BAN WORDS
       if (containsBanWords(text)) {
         const lang = isEnglish(text) ? "en" : "ar";
         await sendBanWordsResponse(from, lang);
-
         delete tempBookings[from];
         session.waitingForCancelPhone = false;
-
         return res.sendStatus(200);
       }
 
-      // -----------------------------------------------------
       // 🌍 LOCATION
-      // -----------------------------------------------------
       if (isLocationRequest(text)) {
         const lang = isEnglish(text) ? "en" : "ar";
         await sendLocationMessages(from, lang);
         return res.sendStatus(200);
       }
 
-      // -----------------------------------------------------
       // 🎁 OFFERS
-      // -----------------------------------------------------
       if (isOffersRequest(text)) {
         session.waitingForOffersConfirmation = true;
-
         const lang = isEnglish(text) ? "en" : "ar";
         await sendOffersValidity(from, lang);
         return res.sendStatus(200);
       }
 
-      // User confirmed he wants the offers
       if (session.waitingForOffersConfirmation) {
         if (isOffersConfirmation(text)) {
           session.waitingForOffersConfirmation = false;
-
           const lang = isEnglish(text) ? "en" : "ar";
           await sendOffersImages(from, lang);
           return res.sendStatus(200);
         }
-
         session.waitingForOffersConfirmation = false;
       }
 
-      // -----------------------------------------------------
       // 👨‍⚕️ DOCTORS
-      // -----------------------------------------------------
       if (isDoctorsRequest(text)) {
         const lang = isEnglish(text) ? "en" : "ar";
         await sendDoctorsImages(from, lang);
         return res.sendStatus(200);
       }
 
-      // -----------------------------------------------------
       // ❗ CANCEL BOOKING
-      // -----------------------------------------------------
       if (isCancelRequest(text)) {
         session.waitingForCancelPhone = true;
-
         delete tempBookings[from];
-
         await askForCancellationPhone(from);
         return res.sendStatus(200);
       }
 
-      // Waiting for phone number to cancel
       if (session.waitingForCancelPhone) {
         const phone = text.replace(/\D/g, "");
-
         if (phone.length < 8) {
           await sendTextMessage(from, "⚠️ رقم الجوال غير صحيح. حاول مرة أخرى:");
           return res.sendStatus(200);
         }
-
         session.waitingForCancelPhone = false;
         await processCancellation(from, phone);
         return res.sendStatus(200);
       }
 
-      // -----------------------------------------------------
-      // 🗓️ BOOKING FLOW
-      // -----------------------------------------------------
+      // 🗓️ BOOKING FLOW (ONLY if not greeting)
       await handleTextMessage(text, from, tempBookings);
 
       return res.sendStatus(200);
