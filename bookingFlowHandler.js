@@ -1,14 +1,16 @@
 /**
- * bookingFlowHandler.js — FINAL SAFE VERSION
+ * bookingFlowHandler.js — FINAL STABLE VERSION
  *
  * Handles:
  * - Booking flow (slot → name → phone → service)
  * - Cancel booking flow
  * - Interactive buttons (slots + services)
+ *
+ * RULE:
+ * - This file sends replies ONLY for booking-related flows
  */
 
 const {
-  askAI,
   sendTextMessage,
   sendAppointmentOptions,
   insertBookingToSupabase,
@@ -25,17 +27,17 @@ const {
 } = require("./bookingSteps");
 
 // ---------------------------------------------
-// 🧠 SESSION STORAGE (in-memory, Vercel safe)
+// 🧠 GLOBAL SESSION STORAGE (Vercel TEMP SAFE)
 // ---------------------------------------------
-const sessions = {};
+global.sessions = global.sessions || {};
 
 function getSession(userId) {
-  if (!sessions[userId]) {
-    sessions[userId] = {
+  if (!global.sessions[userId]) {
+    global.sessions[userId] = {
       waitingForCancelPhone: false,
     };
   }
-  return sessions[userId];
+  return global.sessions[userId];
 }
 
 /**
@@ -44,23 +46,23 @@ function getSession(userId) {
  * ==================================
  */
 async function handleInteractiveMessage(message, from, tempBookings) {
-  const type = message.interactive?.type;
+  const interactive = message.interactive;
+  if (!interactive) return;
 
-  const id =
-    type === "list_reply"
-      ? message.interactive?.list_reply?.id
-      : message.interactive?.button_reply?.id;
+  const id = interactive.list_reply?.id || interactive.button_reply?.id || null;
 
-  console.log("🔘 Interactive received:", { from, id, type });
+  if (!id) return;
+
+  console.log("🔘 Interactive received:", { from, id });
 
   // -------------------------------
   // 🕒 APPOINTMENT SLOT
   // -------------------------------
-  if (id?.startsWith("slot_")) {
-    const slot = id.replace("slot_", "");
-    const appointment = `${slot} PM`;
-
-    tempBookings[from] = { appointment };
+  if (id.startsWith("slot_")) {
+    const slot = id.replace("slot_", ""); // 3 / 6 / 9
+    tempBookings[from] = {
+      appointment: `${slot} PM`,
+    };
 
     await sendTextMessage(from, "👍 تم اختيار الموعد! الآن أرسل اسمك:");
     return;
@@ -69,9 +71,7 @@ async function handleInteractiveMessage(message, from, tempBookings) {
   // -------------------------------
   // 💊 SERVICE SELECTION
   // -------------------------------
-  if (id?.startsWith("service_")) {
-    const serviceName = id.replace("service_", "");
-
+  if (id.startsWith("service_")) {
     if (!tempBookings[from] || !tempBookings[from].phone) {
       await sendTextMessage(
         from,
@@ -80,12 +80,13 @@ async function handleInteractiveMessage(message, from, tempBookings) {
       return;
     }
 
+    const serviceName = id.replace("service_", "");
     tempBookings[from].service = serviceName;
-    const booking = tempBookings[from];
 
+    const booking = tempBookings[from];
     console.log("✅ Final booking:", booking);
 
-    // Save to Supabase
+    // Save booking
     await insertBookingToSupabase(booking);
 
     // Confirmation
@@ -106,11 +107,12 @@ async function handleInteractiveMessage(message, from, tempBookings) {
  */
 async function handleTextMessage(text, from, tempBookings) {
   const session = getSession(from);
+  const cleanText = text.trim();
 
   // -------------------------------
   // ❌ CANCEL BOOKING
   // -------------------------------
-  if (isCancelRequest(text)) {
+  if (isCancelRequest(cleanText)) {
     session.waitingForCancelPhone = true;
     delete tempBookings[from];
 
@@ -119,7 +121,7 @@ async function handleTextMessage(text, from, tempBookings) {
   }
 
   if (session.waitingForCancelPhone) {
-    const phone = text.replace(/\D/g, "");
+    const phone = cleanText.replace(/\D/g, "");
 
     if (phone.length < 8) {
       await sendTextMessage(from, "⚠️ رقم غير صحيح، حاول مرة أخرى:");
@@ -134,8 +136,8 @@ async function handleTextMessage(text, from, tempBookings) {
   // -------------------------------
   // ⏱ QUICK SLOT INPUT (3 / 6 / 9)
   // -------------------------------
-  if (!tempBookings[from] && ["3", "6", "9"].includes(text)) {
-    tempBookings[from] = { appointment: `${text} PM` };
+  if (!tempBookings[from] && ["3", "6", "9"].includes(cleanText)) {
+    tempBookings[from] = { appointment: `${cleanText} PM` };
     await sendTextMessage(from, "👍 تم اختيار الموعد! الآن أرسل اسمك:");
     return;
   }
@@ -144,7 +146,7 @@ async function handleTextMessage(text, from, tempBookings) {
   // 👤 NAME STEP
   // -------------------------------
   if (tempBookings[from] && !tempBookings[from].name) {
-    await handleNameStep(text, from, tempBookings);
+    await handleNameStep(cleanText, from, tempBookings);
     return;
   }
 
@@ -152,7 +154,7 @@ async function handleTextMessage(text, from, tempBookings) {
   // 📱 PHONE STEP
   // -------------------------------
   if (tempBookings[from] && !tempBookings[from].phone) {
-    await handlePhoneStep(text, from, tempBookings);
+    await handlePhoneStep(cleanText, from, tempBookings);
     return;
   }
 
@@ -160,24 +162,24 @@ async function handleTextMessage(text, from, tempBookings) {
   // 💊 SERVICE STEP
   // -------------------------------
   if (tempBookings[from] && !tempBookings[from].service) {
-    await handleServiceStep(text, from, tempBookings);
+    await handleServiceStep(cleanText, from, tempBookings);
     return;
   }
 
   // -------------------------------
   // 🗓 START BOOKING
   // -------------------------------
-  if (!tempBookings[from] && isBookingRequest(text)) {
+  if (!tempBookings[from] && isBookingRequest(cleanText)) {
     await sendAppointmentOptions(from);
     return;
   }
 
   // -------------------------------
-  // 🤖 SAFE FALLBACK (NO AI SPAM)
+  // 🤖 FALLBACK (BOOKING CONTEXT ONLY)
   // -------------------------------
   await sendTextMessage(
     from,
-    "👋 مرحبًا!\n\nاختر ما تريد:\n1️⃣ حجز موعد\n2️⃣ العروض\n3️⃣ الموقع"
+    "👋 مرحبًا!\n\nاختر:\n1️⃣ حجز موعد\n2️⃣ العروض\n3️⃣ الموقع"
   );
 }
 

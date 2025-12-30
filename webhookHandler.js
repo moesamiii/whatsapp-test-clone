@@ -1,15 +1,13 @@
 /**
- * webhookHandler.js — FINAL FULL VERSION (Vercel + Meta Safe)
+ * webhookHandler.js — FINAL STABLE VERSION
  *
- * Responsibilities:
- * - Verify webhook
- * - Receive WhatsApp messages
- * - Detect intents (location / offers / doctors / booking / cancel)
- * - Handle booking flow
- * - Handle audio transcription
+ * Rules enforced:
+ * - ONE incoming message → ONE handler → ONE response
+ * - No duplicate sendTextMessage calls
+ * - Router only, logic delegated cleanly
  */
 
-const { sendTextMessage } = require("./helpers");
+const { handleAudioMessage } = require("./webhookProcessor");
 
 // Media services
 const {
@@ -21,6 +19,13 @@ const {
 
 // Content filter
 const { containsBanWords, sendBanWordsResponse } = require("./contentFilter");
+
+// Helpers
+const {
+  sendTextMessage,
+  askForCancellationPhone,
+  processCancellation,
+} = require("./helpers");
 
 // Detection helpers
 const {
@@ -34,17 +39,12 @@ const {
   getGreeting,
 } = require("./messageHandlers");
 
-// Audio handler
-const { handleAudioMessage } = require("./webhookProcessor");
-
 // Booking flow
 const {
   getSession,
   handleInteractiveMessage,
   handleTextMessage,
 } = require("./bookingFlowHandler");
-
-const { askForCancellationPhone, processCancellation } = require("./helpers");
 
 // --------------------------------------------------
 // REGISTER WHATSAPP WEBHOOK ROUTES
@@ -72,22 +72,20 @@ function registerWebhookRoutes(app, VERIFY_TOKEN) {
   // ---------------------------------
   app.post("/webhook", async (req, res) => {
     try {
-      const body = req.body;
-
-      const message = body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+      const message = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
 
       // Always ACK Meta
-      if (!message) {
-        return res.sendStatus(200);
-      }
+      if (!message) return res.sendStatus(200);
 
       const from = message.from;
       const text = message.text?.body?.trim() || null;
 
-      const session = getSession(from);
-      const tempBookings = (global.tempBookings = global.tempBookings || {});
+      global.tempBookings = global.tempBookings || {};
+      const tempBookings = global.tempBookings;
 
-      console.log("📩 Incoming message:", message.type, from);
+      const session = getSession(from);
+
+      console.log("📩 Incoming:", message.type, from);
 
       // -----------------------------------------------------
       // 🎙️ AUDIO
@@ -108,16 +106,13 @@ function registerWebhookRoutes(app, VERIFY_TOKEN) {
       // -----------------------------------------------------
       // 📨 IGNORE NON-TEXT
       // -----------------------------------------------------
-      if (!text) {
-        return res.sendStatus(200);
-      }
+      if (!text) return res.sendStatus(200);
 
       // -----------------------------------------------------
       // 👋 GREETING
       // -----------------------------------------------------
       if (isGreeting(text)) {
-        const reply = getGreeting(isEnglish(text));
-        await sendTextMessage(from, reply);
+        await sendTextMessage(from, getGreeting(isEnglish(text)));
         return res.sendStatus(200);
       }
 
@@ -125,12 +120,9 @@ function registerWebhookRoutes(app, VERIFY_TOKEN) {
       // 🚫 BAN WORDS
       // -----------------------------------------------------
       if (containsBanWords(text)) {
-        const lang = isEnglish(text) ? "en" : "ar";
-        await sendBanWordsResponse(from, lang);
-
+        await sendBanWordsResponse(from, isEnglish(text) ? "en" : "ar");
         delete tempBookings[from];
         session.waitingForCancelPhone = false;
-
         return res.sendStatus(200);
       }
 
@@ -138,8 +130,7 @@ function registerWebhookRoutes(app, VERIFY_TOKEN) {
       // 🌍 LOCATION
       // -----------------------------------------------------
       if (isLocationRequest(text)) {
-        const lang = isEnglish(text) ? "en" : "ar";
-        await sendLocationMessages(from, lang);
+        await sendLocationMessages(from, isEnglish(text) ? "en" : "ar");
         return res.sendStatus(200);
       }
 
@@ -148,32 +139,28 @@ function registerWebhookRoutes(app, VERIFY_TOKEN) {
       // -----------------------------------------------------
       if (isOffersRequest(text)) {
         session.waitingForOffersConfirmation = true;
-        const lang = isEnglish(text) ? "en" : "ar";
-        await sendOffersValidity(from, lang);
+        await sendOffersValidity(from, isEnglish(text) ? "en" : "ar");
         return res.sendStatus(200);
       }
 
       if (session.waitingForOffersConfirmation) {
+        session.waitingForOffersConfirmation = false;
         if (isOffersConfirmation(text)) {
-          session.waitingForOffersConfirmation = false;
-          const lang = isEnglish(text) ? "en" : "ar";
-          await sendOffersImages(from, lang);
+          await sendOffersImages(from, isEnglish(text) ? "en" : "ar");
           return res.sendStatus(200);
         }
-        session.waitingForOffersConfirmation = false;
       }
 
       // -----------------------------------------------------
       // 👨‍⚕️ DOCTORS
       // -----------------------------------------------------
       if (isDoctorsRequest(text)) {
-        const lang = isEnglish(text) ? "en" : "ar";
-        await sendDoctorsImages(from, lang);
+        await sendDoctorsImages(from, isEnglish(text) ? "en" : "ar");
         return res.sendStatus(200);
       }
 
       // -----------------------------------------------------
-      // ❗ CANCEL BOOKING
+      // ❌ CANCEL BOOKING
       // -----------------------------------------------------
       if (isCancelRequest(text)) {
         session.waitingForCancelPhone = true;
@@ -185,7 +172,7 @@ function registerWebhookRoutes(app, VERIFY_TOKEN) {
       if (session.waitingForCancelPhone) {
         const phone = text.replace(/\D/g, "");
         if (phone.length < 8) {
-          await sendTextMessage(from, "⚠️ رقم الجوال غير صحيح. حاول مرة أخرى:");
+          await sendTextMessage(from, "⚠️ رقم الجوال غير صحيح");
           return res.sendStatus(200);
         }
 
@@ -195,22 +182,13 @@ function registerWebhookRoutes(app, VERIFY_TOKEN) {
       }
 
       // -----------------------------------------------------
-      // 🗓️ BOOKING FLOW (SAFE FALLBACK)
+      // 🗓️ BOOKING FLOW (DELEGATED)
       // -----------------------------------------------------
-      try {
-        await handleTextMessage(text, from, tempBookings);
-      } catch (e) {
-        console.error("❌ Booking flow error:", e);
-        await sendTextMessage(
-          from,
-          "✅ Bot is connected.\n\n1️⃣ Booking\n2️⃣ Offers\n3️⃣ Location"
-        );
-      }
-
+      await handleTextMessage(text, from, tempBookings);
       return res.sendStatus(200);
     } catch (err) {
-      console.error("❌ Webhook Handler Fatal Error:", err);
-      return res.sendStatus(200); // IMPORTANT: never fail Meta
+      console.error("❌ Webhook Fatal Error:", err);
+      return res.sendStatus(200); // NEVER FAIL META
     }
   });
 }
