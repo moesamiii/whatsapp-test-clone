@@ -69,15 +69,15 @@ async function sendAppointmentOptions(to) {
             buttons: [
               {
                 type: "reply",
-                reply: { id: "slot_3", title: "🕒 3 مساءً" },
+                reply: { id: "slot_3pm", title: "🕒 3 مساءً" },
               },
               {
                 type: "reply",
-                reply: { id: "slot_6", title: "🕕 6 مساءً" },
+                reply: { id: "slot_6pm", title: "🕕 6 مساءً" },
               },
               {
                 type: "reply",
-                reply: { id: "slot_9", title: "🕘 9 مساءً" },
+                reply: { id: "slot_9pm", title: "🕘 9 مساءً" },
               },
             ],
           },
