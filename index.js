@@ -1,8 +1,9 @@
-// index.js - FIXED VERSION (No Google Sheets)
+// index.js
 const express = require("express");
 const bodyParser = require("body-parser");
 const path = require("path");
 const { registerWebhookRoutes } = require("./webhookHandler");
+const { detectSheetName, getAllBookings } = require("./helpers");
 
 const app = express();
 app.use(bodyParser.json());
@@ -10,7 +11,7 @@ app.use(bodyParser.json());
 // ---------------------------------------------
 // Environment Variables
 // ---------------------------------------------
-const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "whatsapp_test_clone_123";
+const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "my_secret";
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 
@@ -22,7 +23,12 @@ console.log("✅ VERIFY_TOKEN loaded:", !!VERIFY_TOKEN);
 console.log("✅ WHATSAPP_TOKEN loaded:", !!WHATSAPP_TOKEN);
 console.log("✅ PHONE_NUMBER_ID loaded:", PHONE_NUMBER_ID || "❌ Not found");
 
-// ✅ REMOVED detectSheetName() - No longer needed with Supabase
+// Detect sheet name on startup (if used)
+try {
+  detectSheetName();
+} catch (err) {
+  console.error("⚠️ detectSheetName() failed:", err.message);
+}
 
 // ---------------------------------------------
 // Global booking memory
@@ -41,11 +47,9 @@ app.get("/dashboard", async (req, res) => {
   res.sendFile(path.join(__dirname, "dashboard.html"));
 });
 
-// ✅ FIXED - Get bookings from Supabase instead of Google Sheets
 app.get("/api/bookings", async (req, res) => {
   try {
-    const { getAllBookingsFromSupabase } = require("./databaseHelper");
-    const data = await getAllBookingsFromSupabase();
+    const data = await getAllBookings();
     res.json(data);
   } catch (err) {
     console.error("❌ Error fetching bookings:", err);
@@ -69,6 +73,7 @@ app.post("/sendWhatsApp", async (req, res) => {
 
     // Construct message
     const messageText = `👋 مرحبًا ${name}!\nتم حجز موعدك لخدمة ${service} في Smile Clinic 🦷\n📅 ${appointment}`;
+
     const url = `https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`;
     const headers = {
       "Content-Type": "application/json",
@@ -201,5 +206,3 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`✅ Server running on http://localhost:${PORT}`);
 });
-
-module.exports = app;

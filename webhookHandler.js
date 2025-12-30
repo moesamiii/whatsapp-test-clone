@@ -1,5 +1,5 @@
 /**
- * webhookHandler.js — FINAL FULL VERSION (Vercel + Meta Safe)
+ * webhookHandler.js (FINAL FIXED VERSION)
  *
  * Responsibilities:
  * - Verify webhook
@@ -9,9 +9,9 @@
  * - Handle audio transcription
  */
 
-const { sendTextMessage } = require("./helpers");
+const { askAI, sendTextMessage, sendAppointmentOptions } = require("./helpers");
 
-// Media services
+// ⚠️ FIXED — media functions must come from mediaService.js
 const {
   sendLocationMessages,
   sendOffersImages,
@@ -19,25 +19,24 @@ const {
   sendOffersValidity,
 } = require("./mediaService");
 
-// Content filter
+// ⚠️ FIXED — ban words functions come from contentFilter.js
 const { containsBanWords, sendBanWordsResponse } = require("./contentFilter");
 
-// Detection helpers
+// ✔ detection helpers stay in messageHandlers.js
 const {
   isLocationRequest,
   isOffersRequest,
   isOffersConfirmation,
   isDoctorsRequest,
+  isBookingRequest,
   isCancelRequest,
   isEnglish,
   isGreeting,
   getGreeting,
 } = require("./messageHandlers");
 
-// Audio handler
 const { handleAudioMessage } = require("./webhookProcessor");
 
-// Booking flow
 const {
   getSession,
   handleInteractiveMessage,
@@ -46,40 +45,36 @@ const {
 
 const { askForCancellationPhone, processCancellation } = require("./helpers");
 
-// --------------------------------------------------
+// ---------------------------------------------
 // REGISTER WHATSAPP WEBHOOK ROUTES
-// --------------------------------------------------
+// ---------------------------------------------
 function registerWebhookRoutes(app, VERIFY_TOKEN) {
   // ---------------------------------
-  // GET — VERIFY WEBHOOK (META)
+  // GET — Verify Webhook
   // ---------------------------------
   app.get("/webhook", (req, res) => {
     const mode = req.query["hub.mode"];
     const token = req.query["hub.verify_token"];
     const challenge = req.query["hub.challenge"];
 
-    if (mode === "subscribe" && token === VERIFY_TOKEN) {
-      console.log("✅ Webhook verified by Meta");
+    if (mode && token === VERIFY_TOKEN) {
       return res.status(200).send(challenge);
     }
 
-    console.warn("❌ Webhook verification failed");
     return res.sendStatus(403);
   });
 
   // ---------------------------------
-  // POST — RECEIVE WHATSAPP EVENTS
+  // POST — Receive WhatsApp Events
   // ---------------------------------
   app.post("/webhook", async (req, res) => {
     try {
       const body = req.body;
 
-      const message = body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+      const message =
+        body.entry?.[0]?.changes?.[0]?.value?.messages?.[0] || null;
 
-      // Always ACK Meta
-      if (!message) {
-        return res.sendStatus(200);
-      }
+      if (!message) return res.sendStatus(200);
 
       const from = message.from;
       const text = message.text?.body?.trim() || null;
@@ -87,10 +82,8 @@ function registerWebhookRoutes(app, VERIFY_TOKEN) {
       const session = getSession(from);
       const tempBookings = (global.tempBookings = global.tempBookings || {});
 
-      console.log("📩 Incoming message:", message.type, from);
-
       // -----------------------------------------------------
-      // 🎙️ AUDIO
+      // 🎙️ AUDIO → sent to audio processor
       // -----------------------------------------------------
       if (message.type === "audio") {
         await handleAudioMessage(message, from);
@@ -98,7 +91,7 @@ function registerWebhookRoutes(app, VERIFY_TOKEN) {
       }
 
       // -----------------------------------------------------
-      // 🎛️ INTERACTIVE (buttons / lists)
+      // 🎛️ INTERACTIVE (Buttons / Lists)
       // -----------------------------------------------------
       if (message.type === "interactive") {
         await handleInteractiveMessage(message, from, tempBookings);
@@ -106,14 +99,12 @@ function registerWebhookRoutes(app, VERIFY_TOKEN) {
       }
 
       // -----------------------------------------------------
-      // 📨 IGNORE NON-TEXT
+      // 📨 Ignore Non-Text Messages
       // -----------------------------------------------------
-      if (!text) {
-        return res.sendStatus(200);
-      }
+      if (!text) return res.sendStatus(200);
 
       // -----------------------------------------------------
-      // 👋 GREETING
+      // 👋 Greeting detection
       // -----------------------------------------------------
       if (isGreeting(text)) {
         const reply = getGreeting(isEnglish(text));
@@ -122,7 +113,7 @@ function registerWebhookRoutes(app, VERIFY_TOKEN) {
       }
 
       // -----------------------------------------------------
-      // 🚫 BAN WORDS
+      // 🚫 Ban Words
       // -----------------------------------------------------
       if (containsBanWords(text)) {
         const lang = isEnglish(text) ? "en" : "ar";
@@ -148,18 +139,22 @@ function registerWebhookRoutes(app, VERIFY_TOKEN) {
       // -----------------------------------------------------
       if (isOffersRequest(text)) {
         session.waitingForOffersConfirmation = true;
+
         const lang = isEnglish(text) ? "en" : "ar";
         await sendOffersValidity(from, lang);
         return res.sendStatus(200);
       }
 
+      // User confirmed he wants the offers
       if (session.waitingForOffersConfirmation) {
         if (isOffersConfirmation(text)) {
           session.waitingForOffersConfirmation = false;
+
           const lang = isEnglish(text) ? "en" : "ar";
           await sendOffersImages(from, lang);
           return res.sendStatus(200);
         }
+
         session.waitingForOffersConfirmation = false;
       }
 
@@ -177,13 +172,17 @@ function registerWebhookRoutes(app, VERIFY_TOKEN) {
       // -----------------------------------------------------
       if (isCancelRequest(text)) {
         session.waitingForCancelPhone = true;
+
         delete tempBookings[from];
+
         await askForCancellationPhone(from);
         return res.sendStatus(200);
       }
 
+      // Waiting for phone number to cancel
       if (session.waitingForCancelPhone) {
         const phone = text.replace(/\D/g, "");
+
         if (phone.length < 8) {
           await sendTextMessage(from, "⚠️ رقم الجوال غير صحيح. حاول مرة أخرى:");
           return res.sendStatus(200);
@@ -195,22 +194,14 @@ function registerWebhookRoutes(app, VERIFY_TOKEN) {
       }
 
       // -----------------------------------------------------
-      // 🗓️ BOOKING FLOW (SAFE FALLBACK)
+      // 🗓️ BOOKING FLOW
       // -----------------------------------------------------
-      try {
-        await handleTextMessage(text, from, tempBookings);
-      } catch (e) {
-        console.error("❌ Booking flow error:", e);
-        await sendTextMessage(
-          from,
-          "✅ Bot is connected.\n\n1️⃣ Booking\n2️⃣ Offers\n3️⃣ Location"
-        );
-      }
+      await handleTextMessage(text, from, tempBookings);
 
       return res.sendStatus(200);
     } catch (err) {
-      console.error("❌ Webhook Handler Fatal Error:", err);
-      return res.sendStatus(200); // IMPORTANT: never fail Meta
+      console.error("❌ Webhook Handler Error:", err);
+      return res.sendStatus(500);
     }
   });
 }
